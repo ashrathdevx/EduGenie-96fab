@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 const MAX_PROMPT_LENGTH = 12_000;
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
