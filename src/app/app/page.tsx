@@ -54,6 +54,7 @@ const examples = [
 ];
 
 type ChatMessage = {
+  id: string;
   question: string;
   answer: string;
   fileName?: string;
@@ -102,6 +103,8 @@ export default function Home() {
 
     setLoading(true);
     setError("");
+    let streamMessageId = "";
+    let streamedAnswer = "";
 
     try {
       const data = new FormData();
@@ -114,20 +117,87 @@ export default function Home() {
         body: data,
       });
 
-      const result = await response.json();
-
       if (!response.ok) {
+        const result = await response.json();
         throw new Error(result.error || "Unable to get an answer.");
       }
 
-      setMessages((previous) => [
-        ...previous,
-        {
-          question: question || "Explain the uploaded file.",
-          answer: result.answer,
-          fileName: file?.name,
-        },
-      ]);
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("The answer stream could not be opened.");
+
+        streamMessageId = crypto.randomUUID();
+        setMessages((previous) => [
+          ...previous,
+          {
+            id: streamMessageId,
+            question: question || "Explain the uploaded file.",
+            answer: "",
+            fileName: file?.name,
+          },
+        ]);
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamError = "";
+        let finished = false;
+
+        const readEvent = (event: string) => {
+          const payload = event
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .join("\n");
+          if (!payload) return;
+
+          const update = JSON.parse(payload) as { text?: string; error?: string; done?: boolean };
+          if (update.error) {
+            streamError = update.error;
+            return;
+          }
+          if (update.text) {
+            streamedAnswer += update.text;
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === streamMessageId
+                  ? { ...message, answer: streamedAnswer }
+                  : message
+              )
+            );
+          }
+          if (update.done) finished = true;
+        };
+
+        while (!finished && !streamError) {
+          const { done, value: chunk } = await reader.read();
+          buffer += decoder.decode(chunk, { stream: !done });
+          const events = buffer.split(/\r?\n\r?\n/);
+          buffer = events.pop() || "";
+          for (const event of events) {
+            readEvent(event);
+            if (finished || streamError) break;
+          }
+          if (done) {
+            if (buffer.trim()) readEvent(buffer);
+            break;
+          }
+        }
+
+        if (streamError) throw new Error(streamError);
+        if (!streamedAnswer.trim()) throw new Error("Gemini returned no text. Please try again.");
+      } else {
+        const result = await response.json();
+        setMessages((previous) => [
+          ...previous,
+          {
+            id: crypto.randomUUID(),
+            question: question || "Explain the uploaded file.",
+            answer: result.answer,
+            fileName: file?.name,
+          },
+        ]);
+      }
 
       setPrompt("");
       setFile(null);
@@ -139,6 +209,9 @@ export default function Home() {
         });
       }, 100);
     } catch (err) {
+      if (streamMessageId && !streamedAnswer.trim()) {
+        setMessages((previous) => previous.filter((message) => message.id !== streamMessageId));
+      }
       setError(
         err instanceof Error ? err.message : "Something went wrong."
       );
@@ -420,8 +493,8 @@ export default function Home() {
                   Clear <X size={15} />
                 </button>
               </div>
-              {messages.map((message, index) => (
-                <article className="answer-card" key={`${index}-${message.question}`}>
+              {messages.map((message) => (
+                <article className="answer-card" key={message.id}>
                   <div className="question-heading">
                     <div className="question-icon"><MessageCircle size={17} /></div>
                     <div>

@@ -24,6 +24,23 @@ function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
 
+function getAiErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("API_KEY_INVALID") || message.includes("API key not valid") || message.includes("PERMISSION_DENIED")) {
+    return "Gemini authentication failed. Check the API key and API access.";
+  }
+  if (message.includes("RESOURCE_EXHAUSTED") || message.includes("429")) {
+    return "Gemini's request quota or rate limit has been reached. Try again later.";
+  }
+  if (message.includes("NOT_FOUND") || message.includes("404")) {
+    return "The configured Gemini model is unavailable. Check GEMINI_MODEL.";
+  }
+  if (message.toLowerCase().includes("timeout") || message.includes("AbortError")) {
+    return "The AI service took too long to respond. Please try again.";
+  }
+  return "EduGenie could not generate an answer. Check the API configuration and try again.";
+}
+
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -81,29 +98,66 @@ export async function POST(request: Request) {
       parts.push({ inlineData: { mimeType: file.type, data: bytes.toString("base64") } });
     }
 
-    const result = await ai.models.generateContent({
-      model: process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash",
-      contents: [{ role: "user", parts }],
-      config: {
-        maxOutputTokens: 4096,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    const abortController = new AbortController();
+    const encoder = new TextEncoder();
+    let keepAlive: ReturnType<typeof setInterval> | undefined;
+    let streamClosed = false;
+    const answerStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (payload: { text?: string; error?: string; done?: boolean }) => {
+          if (!streamClosed) controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+        };
+        keepAlive = setInterval(() => {
+          if (!streamClosed) controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        }, 8_000);
+
+        void (async () => {
+          try {
+            const chunks = await ai.models.generateContentStream({
+              model: process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash",
+              contents: [{ role: "user", parts }],
+              config: {
+                maxOutputTokens: 4096,
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                abortSignal: abortController.signal,
+                httpOptions: { timeout: 55_000, retryOptions: { attempts: 1 } },
+              },
+            });
+            for await (const chunk of chunks) {
+              const text = chunk.text;
+              if (text) send({ text });
+            }
+            send({ done: true });
+          } catch (error) {
+            console.error("EduGenie Gemini API error:", error instanceof Error ? error.message : "Unknown error");
+            send({ error: getAiErrorMessage(error) });
+          } finally {
+            if (keepAlive) clearInterval(keepAlive);
+            if (!streamClosed) {
+              streamClosed = true;
+              controller.close();
+            }
+          }
+        })();
+      },
+      cancel() {
+        streamClosed = true;
+        if (keepAlive) clearInterval(keepAlive);
+        abortController.abort();
       },
     });
-    const answer = result.text?.trim();
-    if (!answer) return jsonError("Gemini returned no text. Please try again.", 502);
-    return NextResponse.json({ answer }, { headers: { "Cache-Control": "no-store" } });
+
+    return new Response(answerStream, {
+      headers: {
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (error) {
     console.error("EduGenie Gemini API error:", error instanceof Error ? error.message : "Unknown error");
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("API_KEY_INVALID") || message.includes("API key not valid") || message.includes("PERMISSION_DENIED")) {
-      return jsonError("Gemini authentication failed. Check the API key and API access.", 502);
-    }
-    if (message.includes("RESOURCE_EXHAUSTED") || message.includes("429")) {
-      return jsonError("Gemini's request quota or rate limit has been reached. Try again later.", 429);
-    }
-    if (message.includes("NOT_FOUND") || message.includes("404")) {
-      return jsonError("The configured Gemini model is unavailable. Check GEMINI_MODEL.", 502);
-    }
-    return jsonError("EduGenie could not generate an answer. Check the API configuration and try again.", 502);
+    const message = getAiErrorMessage(error);
+    const status = message.includes("quota or rate limit") ? 429 : 502;
+    return jsonError(message, status);
   }
 }
