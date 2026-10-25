@@ -36,10 +36,10 @@ Create `.env.local` in the project root:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=your-supported-gemini-model
 ```
 
-`GEMINI_MODEL` is optional; when omitted, EduGenie uses `gemini-2.5-flash`. Never commit your real API key.
+`GEMINI_MODEL` is optional; when omitted, the chat route uses its server-side default. Never commit your real API key.
 
 Start the development server:
 
@@ -48,6 +48,12 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+## Demo sign-in
+
+The home route opens the EduGenie sign-in screen. This is a demo entry flow, not account authentication: any syntactically valid email and any non-empty password opens `/app`. EduGenie does not send or save the entered password. The "Remember me" option stores only a local demo-access flag.
+
+The demo screen does not protect private data or secure the chat API. `/api/chat` remains publicly callable. Add a real authentication provider and server-side authorization before using private student accounts or data.
 
 ## Upload limits
 
@@ -74,7 +80,7 @@ src/
 
 ## Current scope
 
-EduGenie is an early-stage project. Conversation history is held in the current session UI and is not persisted to a database. Gemini responses can be incorrect; review important answers against trusted course materials.
+EduGenie is an early-stage project. Conversation history is held in the current session UI and is not persisted to a database. AI responses can be incorrect; review important answers against trusted course materials.
 
 ## License
 

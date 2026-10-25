@@ -3,9 +3,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "EduGenie — Your AI Education Assistant",
+  title: "EduGenie | Study Assistant",
   description:
-    "Learn smarter with personalized AI explanations, step-by-step solutions, image analysis, and study document assistance powered by Google Gemini.",
+    "Learn smarter with guided explanations, step-by-step solutions, image analysis, and study document assistance.",
   applicationName: "EduGenie",
 };
 
