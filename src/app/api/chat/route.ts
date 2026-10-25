@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 
 const MAX_PROMPT_LENGTH = 12_000;
@@ -84,7 +84,10 @@ export async function POST(request: Request) {
     const result = await ai.models.generateContent({
       model: process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash",
       contents: [{ role: "user", parts }],
-      config: { maxOutputTokens: 4096 },
+      config: {
+        maxOutputTokens: 4096,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      },
     });
     const answer = result.text?.trim();
     if (!answer) return jsonError("Gemini returned no text. Please try again.", 502);
