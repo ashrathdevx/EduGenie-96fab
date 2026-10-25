@@ -26,6 +26,9 @@ function jsonError(message: string, status: number) {
 
 function getAiErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : "";
+  if (message.includes("503") || message.includes("UNAVAILABLE")) {
+    return "Gemini is temporarily busy. Please try again in a moment.";
+  }
   if (message.includes("API_KEY_INVALID") || message.includes("API key not valid") || message.includes("PERMISSION_DENIED")) {
     return "Gemini authentication failed. Check the API key and API access.";
   }
@@ -113,19 +116,43 @@ export async function POST(request: Request) {
 
         void (async () => {
           try {
-            const chunks = await ai.models.generateContentStream({
-              model: process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash",
-              contents: [{ role: "user", parts }],
-              config: {
-                maxOutputTokens: 4096,
-                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-                abortSignal: abortController.signal,
-                httpOptions: { timeout: 55_000, retryOptions: { attempts: 1 } },
-              },
-            });
-            for await (const chunk of chunks) {
-              const text = chunk.text;
-              if (text) send({ text });
+            const primaryModel = process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash";
+            const fallbackModel = process.env.GEMINI_FALLBACK_MODEL?.trim() || "gemini-3.5-flash-lite";
+            let hasSentText = false;
+            const streamModel = async (model: string) =>
+              ai.models.generateContentStream({
+                model,
+                contents: [{ role: "user", parts }],
+                config: {
+                  maxOutputTokens: 4096,
+                  thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                  abortSignal: abortController.signal,
+                  httpOptions: { timeout: 55_000, retryOptions: { attempts: 1 } },
+                },
+              });
+            const forwardChunks = async (chunks: Awaited<ReturnType<typeof streamModel>>) => {
+              for await (const chunk of chunks) {
+                const text = chunk.text;
+                if (text) {
+                  hasSentText = true;
+                  send({ text });
+                }
+              }
+            };
+
+            try {
+              await forwardChunks(await streamModel(primaryModel));
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "";
+              const status = (error as { status?: number; code?: number } | null)?.status ??
+                (error as { code?: number } | null)?.code;
+              const isTemporarilyUnavailable = status === 503 || message.includes("503") || message.includes("UNAVAILABLE");
+              if (!hasSentText && isTemporarilyUnavailable && fallbackModel !== primaryModel) {
+                console.warn(`Primary Gemini model unavailable; retrying with ${fallbackModel}.`);
+                await forwardChunks(await streamModel(fallbackModel));
+              } else {
+                throw error;
+              }
             }
             send({ done: true });
           } catch (error) {
